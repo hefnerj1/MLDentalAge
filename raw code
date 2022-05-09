@@ -1,0 +1,635 @@
+#################################################
+# TITLE: Machine Learning Dental Age 
+# PURPOSE: A program for dental age estimation using machine learning
+# AUTHOR: Joe Hefner, Nicholas Herrmann, Kelly Kamnikar
+# LAST UPDATED ON 2022/05/05 (jth)
+# UPDATES: 
+# 1. 2020/09/04: CREATED INITIAL CODE (jth - am)
+# 2. 2020/09/04: model generation and diagnostic plots added (jth - pm)
+# 3. 2020/09/08: further development of various models, including: PI, plots (jth)
+# 4. 2020/09/08: added data.1 - full dataset to test models (jth - pm)
+# 5. 2022/04/20: added full data and imputation along with MLE model for comps
+# 6. 2022/04/21: added additional tooth data and fixed issue with missing REF 
+#                data from Excel
+# 7. 2022/04/25: added ridge regression and plots (jth)
+# 8. 2022/04/25: added missing data imputation diagnostics (jth)
+# 9. 2022/05/05: ran analysis for inclusion in final report (jth)
+# NOTES:
+#################################################
+# START WITH A CLEAN WORKING DIRECTORY
+rm(list=ls())
+#################################################
+library(ggplot2)
+#################################################
+library(plyr)
+#################################################
+library(reshape2)
+#################################################
+library(RColorBrewer)
+#################################################
+library(dplyr)
+#################################################
+library(ggthemes)
+#################################################
+library(rpart) # CARTs
+#################################################
+library(party) # conditional decision trees
+#################################################
+library(randomForest)
+#################################################
+library(gbm) # gradient boosted machine
+#################################################
+library(earth) # MARS
+#################################################
+library(kernlab) #kvm
+#################################################
+library(nnet) #neural network
+#################################################
+library(caret) #k-nearest neighbor
+#################################################
+library("ggiraphExtra")
+#################################################
+library(mice)
+#################################################
+library("VIM")
+#################################################
+library("Hmisc")# for describe function.
+#################################################
+library(descr) #set descr package option to skip plots by default
+#################################################
+options(descr.plot=FALSE)
+#################################################
+options(ggrepel.max.overlaps = Inf) #for repel function in ggplot2
+#################################################
+library(FactoMineR)
+#################################################
+library(factoextra)
+#################################################
+#################################################
+# set seed for reproducibility
+set.seed(6123)
+#################################################
+getwd() 
+data<-read.csv("data.3.csv",header=TRUE)
+#data.1<-read.csv("data.1.csv",header=TRUE)
+tab<-(data)
+dataset <- tab
+head(dataset)
+#################################################
+# impute missing data for all
+aggr_plot<-aggr(dataset,col=c('darkgreen','cornsilk'), numbers=TRUE,sortVars=TRUE,
+                labels=names(dataset), cex.axis=.7, gap=3, 
+                ylab=c("Histogram of missing data","Pattern"))
+data.m<-mice(data, m=5)
+# extract a single matrix with complete dataset (default is first complete)
+plot(data.m)
+densityplot(data.m)
+densityplot(data.m, ~years)
+data.m<-complete(data.m)
+describe(data.m)
+data<-data.m
+rm(data.m)
+rm(aggr_plot)
+
+
+adult<-tab[7:16]
+dem<-tab[1:3]
+adult<-cbind(dem,adult)
+
+aggr_plot_adult<-aggr(adult,col=c('darkgreen','cornsilk'), numbers=TRUE,sortVars=TRUE,
+                      labels=names(adult), cex.axis=.7, gap=3, 
+                      ylab=c("Histogram of missing data","Pattern"))
+
+
+#################################################
+# pull out training and validation samples
+nobs <- nrow(data)
+train <- sample(nobs, 0.7*nobs)
+
+nobs %>%
+  seq_len() %>%
+  setdiff(train) %>%
+  sample(0.15*nobs) ->
+validate
+
+nobs %>%
+  seq_len() %>%
+  setdiff(train) %>%
+  setdiff(validate) ->
+test
+#################################################
+# variable selections 
+input     <- c("dc","dm2",	"dm1",	"UI1",	"UI2", "I1ig", "I2ig", "Cig", 
+               "P3ig", "P4ig", "M1ig","M2ig", "M3ig")
+
+numeric   <- c("dc","dm2",	"dm1",	"UI1",	"UI2","I1ig", "I2ig", 
+               "Cig", "P3ig", "P4ig", "M1ig","M2ig", "M3ig")
+
+target    <- "years"
+
+ignore    <- c("Origin", "Sex")
+#################################################
+dataset<-data
+#################################################
+# linear regression prior to ML methods as a 'baseline'
+fit.lr <- lm(years ~ ., data=data[train,c(input, target)])
+
+print(summary(fit.lr))
+
+print(anova(fit.lr))
+
+#apply model to subset
+p50.sep<-predict(fit.lr)
+mse.lr <- (mean((tab$years[train] -p50.sep)))
+print(mse.lr)
+
+#apply model to holdout sample
+pnew.sep.lr<-predict(fit.lr, newdata = data[validate,c(input, target)])
+mse.lr.2 <- mean((data$years[validate] - pnew.sep.lr))^2
+print(mse.lr.2)
+
+
+#################################################
+# Random Forest model [traditional]
+
+fit.rfm <- randomForest::randomForest(years ~ .,data=dataset[train, c(input, target)], 
+  ntree=500,mtry=2, importance=TRUE, na.action=randomForest::na.roughfix, replace=FALSE)
+randomForest::importance(fit.rfm)
+
+
+# summarize the fit
+summary(fit.rfm)
+# make predictions
+predictions.rfm <- predict(fit.rfm)
+# summarize accuracy
+mse.rfm <- (mean((data$years[train] - predictions.rfm)))
+print(mse.rfm)
+#apply model to holdout sample
+pnew.sep.rfm<-predict(fit.rfm, newdata = data[validate,])
+mse.2.rfm <- mean((data$years[validate] - pnew.sep.rfm)^2)
+print(mse.2.rfm)
+        
+#################################################
+# neural network
+fit.nnet <- nnet(years ~ .,data=dataset[train,c(input, target)], size=10, linout=TRUE, skip=TRUE, 
+                 MaxNWts=10000, trace=FALSE, maxit=100)
+
+
+
+# Modelling results
+cat(sprintf("A %s network with %d weights.\n",
+    paste(fit.nnet$n, collapse="-"),
+    length(fit.nnet$wts)))
+cat(sprintf("Inputs: %s.\n",
+    paste(fit.nnet$coefnames, collapse=", ")))
+cat(sprintf("Output: %s.\n",
+    names(attr(fit.nnet$terms, "dataClasses"))[1]))
+cat(sprintf("Sum of Squares Residuals: %.4f.\n",
+    sum(residuals(fit.nnet) ^ 2)))
+
+print(summary(fit.nnet))
+
+# make predictions
+predictions.net <- predict(fit.nnet, type="raw")
+# summarize accuracy
+mse.net <- mean((data$years[train] - predictions.net)^2)
+print(mse.net)
+#apply model to holdout sample
+pnew.sep.net<-predict(fit.nnet, newdata = tab[validate,])
+mse.2.net <- mean((tab$years[validate] - pnew.sep.net)^2)
+print(mse.2.net)
+#################################################
+# Multivariate Adaptive Regression Splines
+fit.mars <- earth(years~., data=data[train, c(input, target)],degree=2,
+                  glm=list(family=gaussian))
+# summarize the fit
+summary(fit.mars)
+plotmo(fit.mars)
+summary(fit.mars, digits = 2, style = "pmax")
+# summarize variable importance
+evimp(fit.mars)
+# make predictions
+pred.mars <- predict(fit.mars)
+# summarize accuracy
+mse.mars <- (mean((tab$years[train] - pred.mars)^2))
+print(mse.mars)
+#apply model to holdout sample
+pnew.mars<-predict(fit.mars, newdata = data[validate,])
+mse.mars.2 <- mean((data$years[validate] - pnew.mars)^2)
+print(mse.mars.2)
+#################################################
+# k-nearest neighbor
+fit.knn <- knnreg(dataset[train,input], dataset[train,target], k=3)
+# summarize the fit
+summary(fit.knn)
+# make predictions
+pred.knn <- predict(fit.knn, dataset[train,input])
+# summarize accuracy
+mse.knn <- (mean((dataset$years[train] - pred.knn)^2))
+print(mse.knn)
+#################################################
+# Gradient Boosted Machine - interesting...though no validation currently
+fit.gbm <- gbm(years~., data=data[train, c(input, target)], distribution = "gaussian") # bernoulli, poisson, gaussian
+# summarize the fit
+summary(fit.gbm)
+# make predictions
+predictions.gbm <- predict(fit.gbm)
+pred.gbm <- predict(fit.gbm, data[train,input])
+# summarize accuracy
+mse.gbm <- (mean((data$years[train] - pred.gbm)^2))
+print(mse.gbm)
+#################################################
+# Evaluate model performance 
+#################################################
+# evaluation metrics function
+# for each model, we need to create new train and test sets
+
+index = sample(1:nrow(tab), 0.7*nrow(tab)) 
+
+pred.train = tab[index,] # Create the training data 
+pred.test = tab[-index,] # Create the test data
+
+dim(pred.train)
+dim(pred.test)
+
+eval_metrics = function(model, df, predictions, target){
+  resids = df[,target] - predictions
+  resids2 = resids**2
+  N = length(predictions)
+  r2 = as.character(round(summary(model)$r.squared, 2))
+  adj_r2 = as.character(round(summary(model)$adj.r.squared, 2))
+  print(adj_r2) #Adjusted R-squared
+  print(as.character(round(sqrt(sum(resids2)/N), 2))) #RMSE
+}
+
+# predicting and evaluating the model on training data
+pred.train <- predict(fit.lr, newdata = data, na.omit=TRUE)
+eval_metrics(fit.lr, data, pred.train, target = 'years')
+
+# predicting and evaluating the model on test data
+pred.test = predict(fit.lr, newdata = data)
+eval_metrics(fit.lr, data, pred.test, target = 'years')
+
+#################################################
+# graphics
+par(mfrow=c(3,3))
+#################################################
+# random forest
+pr <- predict(fit.rfm, newdata=(dataset[c(input, target)]))
+obs <- subset(na.omit(dataset[c(input, target)]), select=target)
+obs.rownames <- rownames(obs)
+obs <- as.numeric(obs[[1]])
+obs <- data.frame(years=obs)
+rownames(obs) <- obs.rownames
+fitpoints <- na.omit(cbind(obs, Predicted=pr))
+
+# pseudo R2
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# observed versus predicted
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# linear fit
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline, col="red")
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Include R-square, title, grid
+
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr, col="red"),  bty="n")
+
+# Add a title and grid to the plot.
+
+title(main="Random Forest Model")
+grid()
+#################################################
+# GLM: Generate a Predicted v Observed plot for glm model on tab.
+
+pr <- predict(fit.lr, type="response", newdata=na.omit(dataset[c(input, target)]))
+
+# Obtain the observed output for the dataset.
+
+obs <- subset(dataset[c(input, target)], select=target)
+
+# Handle in case categoric target treated as numeric.
+
+obs.rownames <- rownames(obs)
+obs <- as.numeric(obs[[1]])
+obs <- data.frame(years=obs)
+rownames(obs) <- obs.rownames
+
+# Combine the observed values with the predicted.
+
+fitpoints <- na.omit(cbind(obs, Predicted=pr))
+
+# Obtain the pseudo R2 - a correlation.
+
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Include a pseudo R-square on the plot
+
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr),  bty="n")
+
+# Add a title and grid to the plot.
+
+title(main="Linear Model")
+grid()
+
+#################################################
+# NNET: Generate a Predicted v Observed plot for nnet model on tab.
+
+pr.1 <- predict(fit.nnet, newdata=dataset[c(input, target)])
+
+test<-cbind(pr,pr.1)
+fix(test)
+test<-as.data.frame(test)
+test$bias<-c(test$pr-test$pr.1)
+hist(test$bias)
+# Obtain the observed output for the dataset.
+obs <- subset(dataset[c(input, target)], select=target)
+
+# Handle in case categoric target treated as numeric.
+
+obs.rownames <- rownames(obs)
+obs <- as.numeric(obs[[1]])
+obs <- data.frame(years=obs)
+rownames(obs) <- obs.rownames
+
+# Combine the observed values with the predicted.
+
+fitpoints <- na.omit(cbind(obs, Predicted=pr.1))
+
+# Obtain the pseudo R2 - a correlation.
+
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Include a pseudo R-square on the plot
+
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr),  bty="n")
+
+# Add a title and grid to the plot.
+
+title(main="Neural Net Model")
+grid()
+#################################################
+# MARS: Predicted v Observed 
+
+pr <- predict(fit.mars, newdata=dataset[c(input, target)])
+
+# Obtain the observed output for the dataset.
+
+obs <- subset(dataset[c(input, target)], select=target)
+
+# Handle in case categoric target treated as numeric.
+
+obs.rownames <- rownames(obs)
+obs <- as.numeric(obs[[1]])
+obs <- data.frame(years=obs)
+rownames(obs) <- obs.rownames
+
+# Combine the observed values with the predicted.
+
+fitpoints <- na.omit(cbind(obs, Predicted=pr))
+
+# Obtain the pseudo R2 - a correlation.
+
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Include a pseudo R-square on the plot
+
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr),  bty="n")
+
+# Add a title and grid to the plot.
+
+title(main="MARS")
+grid()
+
+#################################################
+# ridge regression
+library(glmnet)
+
+x = as.matrix(data[4:16])
+y_train = data$years
+
+
+
+lambdas <- 10^seq(2, -3, by = -.1)
+ridge_reg = glmnet(x, y_train, nlambda = 25, alpha = 0, family = 'gaussian', lambda = lambdas)
+
+summary(ridge_reg)
+cv_ridge <- cv.glmnet(x, y_train, alpha = 0, lambda = lambdas)
+optimal_lambda <- cv_ridge$lambda.min
+optimal_lambda
+
+predictions_train <- predict(ridge_reg, s = optimal_lambda, newx = as.matrix(data[4:16]))
+eval_results(y_train, predictions_train, data[4:16])
+
+obs <- data$years
+pr<-predictions_train
+
+fitpoints <- na.omit(cbind(obs, pr))
+fitpoints<-as.data.frame(fitpoints)
+# R2 
+fitcorr <- 0.8905084 #calculated above for ridge regression model
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Add a title and grid to the plot.
+
+title(main="Ridge Regression")
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr),  bty="n")
+grid()
+
+#################################################
+# GBM: Predicted v Observed 
+
+pr <- predict(fit.gbm, newdata=dataset[c(input, target)])
+
+# Obtain the observed output for the dataset.
+
+obs <- subset(dataset[c(input, target)], select=target)
+
+# Handle in case categoric target treated as numeric.
+
+obs.rownames <- rownames(obs)
+obs <- as.numeric(obs[[1]])
+obs <- data.frame(years=obs)
+rownames(obs) <- obs.rownames
+
+# Combine the observed values with the predicted.
+
+fitpoints <- na.omit(cbind(obs, Predicted=pr))
+
+# Obtain the pseudo R2 - a correlation.
+
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Include a pseudo R-square on the plot
+
+legend("bottomright",  sprintf(" Pseudo R-square=%s ", fitcorr),  bty="n")
+
+# Add a title and grid to the plot.
+
+title(main="Generalized Boosted Regression")
+grid()
+#################################################
+# MLE- Transition Analysis: PAtricia Dataset
+dataset<-read.csv("2022_modpat.csv",sep=",",header = TRUE)
+
+# Obtain the observed output for the dataset.
+
+obs <- dataset$Chron_age
+pr<-dataset$New_Age
+
+
+fitpoints <- na.omit(cbind(obs, pr))
+fitpoints<-as.data.frame(fitpoints)
+# Obtain the pseudo R2 - a correlation.
+
+fitcorr <- format(cor(fitpoints[,1], fitpoints[,2])^2, digits=4)
+
+# Plot settings for the true points and best fit.
+
+op <- par(c(lty="solid", col="black"))
+
+# Display the observed (X) versus predicted (Y) points.
+
+plot(fitpoints[[1]], fitpoints[[2]], asp=1, xlab="Actual age", ylab="Predicted age")
+
+# Generate a simple linear fit between predicted and observed.
+
+prline <- lm(fitpoints[,2] ~ fitpoints[,1])
+
+# Add the linear fit to the plot.
+
+abline(prline)
+
+# Add a diagonal representing perfect correlation.
+
+par(c(lty="dashed", col="red"))
+abline(0, 1)
+
+# Add a title and grid to the plot.
+title(main="Maximum Likelihood Estimation \n with Patricia Data")
+grid()
+#################################################
+# End of Program
+#################################################
+
+
